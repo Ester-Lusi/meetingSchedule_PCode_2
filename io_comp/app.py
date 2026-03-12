@@ -1,189 +1,20 @@
-import csv
-import os
 import tkinter as tk
-from abc import ABC, abstractmethod
-from tkinter import messagebox, ttk
-from datetime import time, timedelta, datetime
-from typing import List, NamedTuple, Tuple
+from .repository import MemoryRepository
+from .service import CalendarService
+from .gui import CalendarGUI
 
-# --- 1. Models ---
-class Event(NamedTuple):
-    person: str
-    subject: str
-    start: time
-    end: time
-
-# --- 2. Abstractions ---
-class CalendarRepository(ABC):
-    @abstractmethod
-    def get_events(self) -> List[Event]: pass
-    @abstractmethod
-    def add_event(self, event: Event): pass
-    @abstractmethod
-    def remove_event(self, index: int): pass # דרישת המחיקה
-
-# --- 3. Business Logic ---
-class CalendarService:
-    DAY_START = time(7, 0)
-    DAY_END = time(19, 0)
-
-    def find_available_slots(self, events: List[Event], person_list: List[str], duration_mins: int) -> List[Tuple[time, time]]:
-        event_duration = timedelta(minutes=duration_mins)
-        
-        clipped_events = []
-        for e in events:
-            if e.person in person_list:
-                if e.end <= self.DAY_START or e.start >= self.DAY_END:
-                    continue
-                actual_start = max(e.start, self.DAY_START)
-                actual_end = min(e.end, self.DAY_END)
-                clipped_events.append((actual_start, actual_end))
-
-        if not clipped_events:
-            return [(self.DAY_START, self.DAY_END)]
-
-        clipped_events.sort()
-        merged = []
-        curr_s, curr_e = clipped_events[0]
-        for nxt_s, nxt_e in clipped_events[1:]:
-            if nxt_s <= curr_e:
-                curr_e = max(curr_e, nxt_e)
-            else:
-                merged.append((curr_s, curr_e))
-                curr_s, curr_e = nxt_s, nxt_e
-        merged.append((curr_s, curr_e))
-
-        slots = []
-        timeline = [(self.DAY_START, self.DAY_START)] + merged + [(self.DAY_END, self.DAY_END)]
-        for i in range(len(timeline) - 1):
-            gap_start, gap_end = timeline[i][1], timeline[i+1][0]
-            duration = datetime.combine(datetime.today(), gap_end) - datetime.combine(datetime.today(), gap_start)
-            if duration >= event_duration:
-                slots.append((gap_start, gap_end))
-        
-        return slots
-
-# --- 4. Data Access Layer ---
-class MemoryRepository(CalendarRepository):
-    def __init__(self):
-        self._events: List[Event] = []
-
-    def add_event(self, event: Event):
-        self._events.append(event)
-
-    def remove_event(self, index: int):
-        if 0 <= index < len(self._events):
-            self._events.pop(index)
-
-    def get_events(self) -> List[Event]:
-        return self._events
-
-    def load_from_csv(self, file_path: str):
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"קובץ לא נמצא: {file_path}")
-            
-        with open(file_path, mode='r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) < 4: continue
-                name, subject, start_str, end_str = row
-                try:
-                    self.add_event(Event(
-                        name.strip().replace('"', ''), 
-                        subject.strip().replace('"', ''),
-                        datetime.strptime(start_str.strip(), "%H:%M").time(),
-                        datetime.strptime(end_str.strip(), "%H:%M").time()
-                    ))
-                except ValueError: continue
-
-# --- 5. Presentation Layer (GUI) ---
-class CalendarGUI:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Comp.io Calendar Search & Manage")
-        self.repo = MemoryRepository()
-        self.service = CalendarService()
-
-        # --- אזור בקרה (הוספה, טעינה, מחיקה) ---
-        input_frame = tk.LabelFrame(root, text="ניהול פגישות (הוספה/טעינה/מחיקה)", padx=10, pady=10)
-        input_frame.pack(fill="x", padx=10, pady=5)
-
-        tk.Label(input_frame, text="שם:").grid(row=0, column=0)
-        self.ent_name = tk.Entry(input_frame, width=10); self.ent_name.grid(row=0, column=1, padx=2)
-        
-        tk.Label(input_frame, text="התחלה:").grid(row=0, column=2)
-        self.ent_start = tk.Entry(input_frame, width=6); self.ent_start.insert(0, "08:00"); self.ent_start.grid(row=0, column=3, padx=2)
-        
-        tk.Label(input_frame, text="סיום:").grid(row=0, column=4)
-        self.ent_end = tk.Entry(input_frame, width=6); self.ent_end.insert(0, "09:00"); self.ent_end.grid(row=0, column=5, padx=2)
-
-        tk.Button(input_frame, text="הוסף פגישה", command=self.add_manual).grid(row=0, column=6, padx=5)
-        tk.Button(input_frame, text="📂 טען CSV", command=self.load_csv_from_resources, bg="#e3f2fd").grid(row=0, column=7, padx=5)
-        
-        # הכפתור החדש למחיקה
-        tk.Button(input_frame, text="🗑️ מחק נבחר", command=self.delete_selected, bg="#ffcdd2").grid(row=0, column=8, padx=5)
-
-        # --- טבלה ---
-        self.tree = ttk.Treeview(root, columns=("Person", "Subject", "Start", "End"), show='headings')
-        self.tree.heading("Person", text="משתתף"); self.tree.heading("Subject", text="נושא")
-        self.tree.heading("Start", text="התחלה"); self.tree.heading("End", text="סיום")
-        self.tree.pack(padx=10, pady=5, fill="both", expand=True)
-
-        # --- אזור חישוב ---
-        action_frame = tk.Frame(root, pady=10)
-        action_frame.pack(fill="x", padx=10)
-        
-        tk.Label(action_frame, text="משך פגישה (דקות):").pack(side="left")
-        self.ent_duration = tk.Entry(action_frame, width=5); self.ent_duration.insert(0, "60"); self.ent_duration.pack(side="left", padx=5)
-        
-        tk.Button(action_frame, text="🔍 מצא זמן פנוי לכולם", command=self.calculate, bg="#c8e6c9", height=2).pack(side="right", fill="x", expand=True)
-
-    def delete_selected(self):
-        """מוחק את השורה המסומנת מה-Repository ומהטבלה"""
-        selected_item = self.tree.selection()
-        if not selected_item:
-            messagebox.showwarning("אזהרה", "יש לבחור פגישה מהטבלה כדי למחוק אותה")
-            return
-        
-        # השגת האינדקס של השורה הנבחרת
-        index = self.tree.index(selected_item[0])
-        
-        if messagebox.askyesno("מחיקה", "האם להסיר פגישה זו מהחישוב?"):
-            self.repo.remove_event(index)
-            self.update_table()
-
-    def load_csv_from_resources(self):
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(current_dir)
-        csv_path = os.path.join(project_root, "resources", "calendar.csv")
-        try:
-            self.repo.load_from_csv(csv_path)
-            self.update_table()
-        except Exception as e: messagebox.showerror("שגיאה", str(e))
-
-    def add_manual(self):
-        try:
-            ev = Event(self.ent_name.get().strip(), "Manual Entry",
-                datetime.strptime(self.ent_start.get().strip(), "%H:%M").time(),
-                datetime.strptime(self.ent_end.get().strip(), "%H:%M").time())
-            self.repo.add_event(ev)
-            self.update_table()
-        except Exception as e: messagebox.showerror("שגיאה", "נתונים לא תקינים")
-
-    def update_table(self):
-        for i in self.tree.get_children(): self.tree.delete(i)
-        for e in self.repo.get_events():
-            self.tree.insert("", "end", values=(e.person, e.subject, e.start.strftime("%H:%M"), e.end.strftime("%H:%M")))
-
-    def calculate(self):
-        events = self.repo.get_events()
-        if not events: return
-        people = list(set(e.person for e in events))
-        slots = self.service.find_available_slots(events, people, int(self.ent_duration.get()))
-        res = "חלונות פנויים:\n" + "\n".join([f"✨ {s.strftime('%H:%M')} - {e.strftime('%H:%M')}" for s, e in slots])
-        messagebox.showinfo("תוצאות", res if slots else "לא נמצא זמן פנוי")
+def main():
+    root = tk.Tk()
+    root.geometry("850x500")
+    
+    # אתחול הרכיבים
+    repo = MemoryRepository()
+    service = CalendarService()
+    
+    # יצירת ה-GUI והזרקת התלויות
+    app = CalendarGUI(root, repo, service)
+    
+    root.mainloop()
 
 if __name__ == "__main__":
-    root = tk.Tk(); root.geometry("850x500")
-    app = CalendarGUI(root)
-    root.mainloop()
+    main()
